@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard Bovino - MuuV ESP32</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; }
+        #info { 
+            position: absolute; 
+            top: 10px; left: 10px; 
+            color: white; 
+            font-family: sans-serif; 
+            background: rgba(0,0,0,0.65); 
+            padding: 15px; 
+            border-radius: 8px; 
+            backdrop-filter: blur(5px);
+            max-width: 250px;
+        }
+        button { 
+            display: block;
+            margin-top: 6px; 
+            padding: 8px 12px;
+            width: 100%;
+            cursor: pointer; 
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        button:hover { background: #45a049; }
+    </style>
+    <!-- Three.js ES Modules -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="info">
+        <h3>🐄 MuuV - Painel 3D</h3>
+        <p><strong>Animações:</strong></p>
+        <div id="controls">
+            <!-- Botões gerados dinamicamente: Idle, Walk, Chew, Run -->
+        </div>
+        <hr>
+        <p><strong>Telemetria ESP32:</strong></p>
+        <small style="color: #bbb;">(Mova o mouse para simular a rotação do pescoço)</small><br>
+        Pitch: <span id="pitch">0.00</span>°<br>
+        Roll: <span id="roll">0.00</span>°
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, mixer, clock;
+        let cowModel, neckBone;
+        let currentAction;
+        const actions = {};
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color( 0x87CEEB );
+            scene.fog = new THREE.Fog( 0x87CEEB, 10, 50 );
+
+            camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 0.25, 100 );
+            camera.position.set( 2.5, 1.8, 3.5 );
+
+            // Iluminação
+            const hemiLight = new THREE.HemisphereLight( 0xffffff, 0x444444, 1.8 );
+            hemiLight.position.set( 0, 20, 0 );
+            scene.add( hemiLight );
+
+            const dirLight = new THREE.DirectionalLight( 0xffffff, 2.0 );
+            dirLight.position.set( 4, 10, 8 );
+            dirLight.castShadow = true;
+            scene.add( dirLight );
+
+            // Chão de pasto
+            const ground = new THREE.Mesh( 
+                new THREE.PlaneGeometry( 100, 100 ), 
+                new THREE.MeshStandardMaterial( { color: 0x4e8538, roughness: 0.8 } ) 
+            );
+            ground.rotation.x = - Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add( ground );
+
+            clock = new THREE.Clock();
+
+            // Carregar modelo GLB
+            const loader = new GLTFLoader();
+            loader.load( 'vaca_dashboard.glb', function ( gltf ) {
+                cowModel = gltf.scene;
+                
+                cowModel.traverse( function ( object ) {
+                    if ( object.isMesh ) {
+                        object.castShadow = true;
+                        object.receiveShadow = true;
+                    }
+                    if ( object.isBone && object.name === 'Bone_Neck' ) {
+                        neckBone = object;
+                    }
+                });
+                
+                scene.add( cowModel );
+
+                // Animações
+                const animations = gltf.animations;
+                if ( animations && animations.length ) {
+                    mixer = new THREE.AnimationMixer( cowModel );
+                    const controlsDiv = document.getElementById('controls');
+                    
+                    animations.forEach( ( clip ) => {
+                        const action = mixer.clipAction( clip );
+                        actions[clip.name] = action;
+
+                        // Adiciona botões para Idle, Walk, Chew, Run
+                        const btn = document.createElement('button');
+                        btn.innerText = clip.name;
+                        btn.onclick = () => fadeToAction(clip.name, 0.4);
+                        controlsDiv.appendChild(btn);
+                    });
+
+                    // Inicia no Idle
+                    if (actions['Idle']) {
+                        currentAction = actions['Idle'];
+                        currentAction.play();
+                    } else if (animations[0]) {
+                        currentAction = actions[animations[0].name];
+                        currentAction.play();
+                    }
+                }
+            }, undefined, function ( error ) {
+                console.error( 'Erro ao carregar o modelo:', error );
+            });
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer( { antialias: true } );
+            renderer.setPixelRatio( window.devicePixelRatio );
+            renderer.setSize( window.innerWidth, window.innerHeight );
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild( renderer.domElement );
+
+            const controls = new OrbitControls( camera, renderer.domElement );
+            controls.target.set( 0, 0.6, 0 );
+            controls.update();
+
+            window.addEventListener( 'resize', onWindowResize );
+            document.addEventListener('mousemove', simulateESP32Data);
+        }
+
+        function fadeToAction( name, duration ) {
+            const nextAction = actions[ name ];
+            if ( !nextAction || currentAction === nextAction ) return;
+            nextAction.reset().fadeIn( duration ).play();
+            currentAction.fadeOut( duration );
+            currentAction = nextAction;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize( window.innerWidth, window.innerHeight );
+        }
+
+        // Função de telemetria para o ESP32
+        window.updateCowNeck = function(pitch, roll, yaw = 0) {
+            if(!neckBone) return;
+            neckBone.rotation.x = THREE.MathUtils.degToRad(pitch);
+            neckBone.rotation.y = THREE.MathUtils.degToRad(yaw);
+            neckBone.rotation.z = THREE.MathUtils.degToRad(roll);
+        };
+
+        function simulateESP32Data(event) {
+            const pitch = (event.clientY / window.innerHeight) * 60 - 30; // -30° a +30°
+            const roll = (event.clientX / window.innerWidth) * 60 - 30;
+            document.getElementById('pitch').innerText = pitch.toFixed(2);
+            document.getElementById('roll').innerText = roll.toFixed(2);
+            updateCowNeck(pitch, roll);
+        }
+
+        function animate() {
+            requestAnimationFrame( animate );
+            const dt = clock.getDelta();
+            if ( mixer ) mixer.update( dt );
+            renderer.render( scene, camera );
+        }
+    </script>
+</body>
+</html>
